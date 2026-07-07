@@ -1,0 +1,32 @@
+# Local datasets and generated data
+/data/raw/
+/data/processed/*.jsonl
+
+# Generated artifacts
+/outputs/
+/models/
+/checkpoints/
+*.pt
+*.pth
+*.safetensors
+
+# Python caches and environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.env
+.venv/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Experiment tracking
+wandb/

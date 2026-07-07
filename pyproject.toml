@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "industrial-vlm-inspector"
+version = "0.1.0"
+description = "Training-free industrial visual inspection research prototype"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pillow",
+  "opencv-python",
+  "numpy",
+  "pandas",
+  "tqdm",
+  "pydantic>=2.0",
+  "pyyaml",
+  "scikit-learn",
+  "matplotlib",
+  "gradio",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "ruff"]
+qwen = [
+  "torch",
+  "torchvision",
+  "transformers>=4.57.0",
+  "accelerate",
+  "qwen-vl-utils",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

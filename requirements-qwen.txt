@@ -1,0 +1,4 @@
+# Install a CUDA-compatible PyTorch and torchvision build first.
+transformers>=4.57.0
+accelerate
+qwen-vl-utils

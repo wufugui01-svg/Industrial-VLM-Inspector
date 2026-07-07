@@ -1,0 +1,11 @@
+pillow
+opencv-python
+numpy
+pandas
+tqdm
+pydantic>=2.0
+pyyaml
+scikit-learn
+matplotlib
+gradio
+pytest

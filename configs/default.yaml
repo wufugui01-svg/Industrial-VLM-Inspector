@@ -1,0 +1,12 @@
+project:
+  name: Industrial-VLM-Inspector
+  random_seed: 42
+
+paths:
+  processed_data_dir: data/processed
+  sample_data_dir: data/samples
+  output_dir: outputs
+
+logging:
+  level: INFO
+
