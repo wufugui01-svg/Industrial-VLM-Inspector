@@ -74,9 +74,16 @@ def test_mock_prompt_ablation_writes_all_artifacts() -> None:
             summary_rows = list(csv.DictReader(handle))
 
     assert [row["prompt_type"] for row in summary_rows] == list(PROMPT_TYPES)
+    assert [row["mode"] for row in summary_rows] == [
+        "single",
+        "single",
+        "single",
+        "reference",
+    ]
     assert all(row["total_samples"] == "2" for row in summary_rows)
     assert all(row["json_valid_rate"] == "1.0" for row in summary_rows)
-    assert all(row["parse_success_rate"] == "1.0" for row in summary_rows)
     assert all(row["avg_latency_sec"] for row in summary_rows)
     assert all(row["p95_latency_sec"] for row in summary_rows)
-    assert all(row["binary_accuracy"] == "" for row in summary_rows)
+    assert all(row["avg_confidence"] == "0.5" for row in summary_rows)
+    assert all(row["error_count"] == "0" for row in summary_rows)
+    assert all(row["binary_accuracy"] == "0.5" for row in summary_rows)

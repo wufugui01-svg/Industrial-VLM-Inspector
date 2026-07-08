@@ -36,6 +36,8 @@ def read_prediction_rows(predictions_path: Path) -> list[dict[str, Any]]:
                 row = {
                     "sample_id": f"line_{line_number:08d}",
                     "prediction": None,
+                    "final_prediction": None,
+                    "global_prediction": None,
                     "ground_truth_answer": "",
                     "task_type": "unknown",
                     "object_category": "unknown",
@@ -96,4 +98,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

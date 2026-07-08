@@ -76,10 +76,10 @@ def test_calculate_metrics_and_conservative_binary_mapping() -> None:
     assert metrics["parse_success_rate"] == 0.75
     assert metrics["task_type_distribution"]["Anomaly Detection"] == 2
     assert metrics["object_category_distribution"]["bottle"] == 2
-    assert metrics["binary_accuracy"] == 1.0
-    assert metrics["binary_evaluated_count"] == 2
-    assert metrics["skipped_binary_eval_count"] == 2
-    assert map_binary_ground_truth("A") is None
+    assert metrics["binary_accuracy"] == 2 / 3
+    assert metrics["binary_evaluated_count"] == 3
+    assert metrics["skipped_binary_eval_count"] == 1
+    assert map_binary_ground_truth("A") is False
     assert metrics["avg_latency_sec"] == 2.0
     assert metrics["p50_latency_sec"] == 2.0
     assert metrics["p95_latency_sec"] == 2.9

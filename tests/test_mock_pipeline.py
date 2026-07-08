@@ -22,6 +22,16 @@ class InvalidJSONVLM(BaseVLM):
         return "this is not valid JSON"
 
 
+class RecordingVLM(BaseVLM):
+    def __init__(self) -> None:
+        self.images: list[str] | None = None
+
+    def generate(self, images: list[str], prompt: str) -> str:
+        del prompt
+        self.images = images
+        return MockVLM().generate(images, prompt="")
+
+
 def test_mock_pipeline_returns_inspection_result() -> None:
     result = InspectorAgent(MockVLM()).inspect(SAMPLE)
 
@@ -68,3 +78,17 @@ def test_json_code_block_is_parsed() -> None:
     assert result.raw_model_answer == raw_answer
     assert result.sample_id == "sample-code-block"
     assert result.parse_status == "repaired"
+
+
+def test_missing_reference_image_path_does_not_change_single_image_pipeline() -> None:
+    sample = {
+        **SAMPLE,
+        "image_path": "/tmp/test-image.png",
+        "reference_image_path": "/tmp/reference-image.png",
+    }
+    vlm = RecordingVLM()
+
+    result = InspectorAgent(vlm).inspect(sample)
+
+    assert result.parse_status == "success"
+    assert vlm.images == ["/tmp/test-image.png"]

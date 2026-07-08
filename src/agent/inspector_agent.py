@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from src.agent.output_parser import parse_inspection_result
@@ -22,12 +23,32 @@ class InspectorAgent:
         self.vlm = vlm
         self.prompt_type = prompt_type
 
+    @staticmethod
+    def _existing_reference_path(sample: dict[str, Any]) -> str | None:
+        reference_image_path = sample.get("reference_image_path")
+        if not reference_image_path:
+            return None
+
+        candidate = Path(str(reference_image_path)).expanduser()
+        if candidate.is_file():
+            return str(candidate)
+        return None
+
     def inspect(self, sample: dict[str, Any]) -> InspectionResult:
         """Inspect one indexed sample and return a normalized result."""
 
-        prompt = build_prompt(sample, self.prompt_type)
+        runtime_sample = dict(sample)
+        runtime_sample["reference_image_path"] = self._existing_reference_path(sample)
+        prompt = build_prompt(runtime_sample, self.prompt_type)
         image_path = sample.get("image_path")
-        images = [str(image_path)] if image_path else []
+        images = [
+            image
+            for image in (
+                runtime_sample.get("reference_image_path"),
+                str(image_path) if image_path else None,
+            )
+            if image
+        ]
         raw_answer = self.vlm.generate(images=images, prompt=prompt)
         sample_id = sample.get("sample_id")
         normalized_sample_id = str(sample_id) if sample_id is not None else None

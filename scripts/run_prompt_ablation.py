@@ -1,4 +1,4 @@
-"""Run basic, industrial, and strict-JSON prompt ablation experiments."""
+"""Run prompt ablation experiments across single-image and reference modes."""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts.evaluate_predictions import evaluate_predictions_file  # noqa: E402
 from scripts.run_batch_infer import run_batch_inference  # noqa: E402
+from scripts.run_reference_infer import run_reference_inference  # noqa: E402
+from src.datasets.path_utils import with_resolved_image_path  # noqa: E402
 from src.models.base_vlm import BaseVLM  # noqa: E402
 from src.models.mock_vlm import MockVLM  # noqa: E402
 from src.models.qwen3vl_transformers import (  # noqa: E402
@@ -26,16 +28,23 @@ from src.models.qwen3vl_transformers import (  # noqa: E402
 )
 from src.utils.config import configured_random_seed  # noqa: E402
 
-PROMPT_TYPES = ("basic", "industrial", "strict_json")
+PROMPT_TYPES = ("basic", "industrial", "strict_json", "reference_strict")
+PROMPT_MODES = {
+    "basic": "single",
+    "industrial": "single",
+    "strict_json": "single",
+    "reference_strict": "reference",
+}
 SUMMARY_FIELDS = (
     "prompt_type",
+    "mode",
     "total_samples",
     "json_valid_rate",
-    "parse_success_rate",
-    "repair_rate",
+    "binary_accuracy",
     "avg_latency_sec",
     "p95_latency_sec",
-    "binary_accuracy",
+    "avg_confidence",
+    "error_count",
 )
 
 
@@ -77,6 +86,7 @@ def _write_stratified_selection(
     selected_path: Path,
     limit: int | None,
     seed: int,
+    dataset_root: Path | None = None,
 ) -> list[str]:
     """Write one fixed, shuffled round-robin sample set for every prompt."""
 
@@ -88,6 +98,8 @@ def _write_stratified_selection(
             row = json.loads(line)
             if not isinstance(row, dict):
                 raise ValueError(f"Index row {line_number} is not a JSON object")
+            if dataset_root is not None:
+                row = with_resolved_image_path(row, dataset_root)
             key = (
                 str(row.get("task_type") or "unknown"),
                 str(row.get("object_category") or "unknown"),
@@ -150,7 +162,7 @@ def run_prompt_ablation(
 
     selected_index = output_dir / "selected_samples.jsonl"
     selected_ids = _write_stratified_selection(
-        index_path, selected_index, limit, seed
+        index_path, selected_index, limit, seed, dataset_root
     )
     manifest = {
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -185,31 +197,47 @@ def run_prompt_ablation(
     summary_rows: list[dict[str, Any]] = []
 
     for prompt_type in PROMPT_TYPES:
+        mode = PROMPT_MODES[prompt_type]
         predictions_path = output_dir / f"{prompt_type}_predictions.jsonl"
         metrics_path = output_dir / f"{prompt_type}_metrics.json"
-        print(f"Running prompt_type={prompt_type}")
+        print(f"Running prompt_type={prompt_type} mode={mode}")
 
-        run_batch_inference(
-            index_path=selected_index,
-            output_path=predictions_path,
-            backend=backend,
-            limit=None,
-            show_progress=show_progress,
-            prompt_type=prompt_type,
-            vlm=vlm,
-            dataset_root=dataset_root,
-        )
+        if mode == "reference":
+            run_reference_inference(
+                index_path=selected_index,
+                output_path=predictions_path,
+                backend=backend,
+                model_path=model_path,
+                prompt_type=prompt_type,
+                reference_strategy="first",
+                limit=None,
+                max_new_tokens=max_new_tokens,
+                show_progress=show_progress,
+                vlm=vlm,
+            )
+        else:
+            run_batch_inference(
+                index_path=selected_index,
+                output_path=predictions_path,
+                backend=backend,
+                limit=None,
+                show_progress=show_progress,
+                prompt_type=prompt_type,
+                vlm=vlm,
+                dataset_root=None,
+            )
         metrics = evaluate_predictions_file(predictions_path, metrics_path)
         summary_rows.append(
             {
                 "prompt_type": prompt_type,
+                "mode": mode,
                 "total_samples": metrics["total_samples"],
                 "json_valid_rate": metrics["json_valid_rate"],
-                "parse_success_rate": metrics["parse_success_rate"],
-                "repair_rate": metrics["repair_rate"],
+                "binary_accuracy": metrics["binary_accuracy"],
                 "avg_latency_sec": metrics["avg_latency_sec"],
                 "p95_latency_sec": metrics["p95_latency_sec"],
-                "binary_accuracy": metrics["binary_accuracy"],
+                "avg_confidence": metrics["avg_confidence"],
+                "error_count": metrics["error_count"],
             }
         )
 
@@ -219,7 +247,9 @@ def run_prompt_ablation(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run prompt ablation over three inspection prompt strategies."
+        description=(
+            "Run prompt ablation over single-image and reference inspection prompts."
+        )
     )
     parser.add_argument("--index", type=Path, required=True, help="Input JSONL index.")
     parser.add_argument(

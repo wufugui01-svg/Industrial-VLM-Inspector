@@ -1,4 +1,4 @@
-"""Run model-free batch inference over a JSONL sample index."""
+"""Run reference-based batch inference over a JSONL sample index."""
 
 from __future__ import annotations
 
@@ -16,23 +16,23 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.agent.inspector_agent import InspectorAgent  # noqa: E402
+from src.agent.prompt_builder import PROMPT_TYPES  # noqa: E402
+from src.agent.reference_selector import (  # noqa: E402
+    ReferenceSelector,
+    ReferenceStrategy,
+)
 from src.agent.schema import InspectionResult  # noqa: E402
-from src.datasets.path_utils import with_resolved_image_path  # noqa: E402
 from src.models.base_vlm import BaseVLM  # noqa: E402
 from src.models.mock_vlm import MockVLM  # noqa: E402
 from src.models.qwen3vl_transformers import (  # noqa: E402
     Qwen3VLTransformers,
     QwenDependencyError,
 )
-from src.utils.profiler import (  # noqa: E402
-    Timer,
-    get_gpu_memory_mb,
-    reset_gpu_peak_memory,
-)
+from src.utils.profiler import Timer  # noqa: E402
 
 
 @dataclass
-class BatchSummary:
+class ReferenceInferenceSummary:
     total: int = 0
     succeeded: int = 0
     failed: int = 0
@@ -44,6 +44,44 @@ def _prediction_dict(result: InspectionResult) -> dict[str, Any]:
     return result.dict()
 
 
+def _read_index(index_path: Path) -> list[dict[str, Any]]:
+    samples: list[dict[str, Any]] = []
+    with index_path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Invalid JSON on line {line_number} of {index_path}: {exc}"
+                ) from exc
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"Expected a JSON object on line {line_number} of {index_path}"
+                )
+            samples.append(row)
+    return samples
+
+
+def _create_backend(
+    backend: str,
+    *,
+    model_path: str | None,
+    max_new_tokens: int,
+) -> BaseVLM:
+    if backend == "mock":
+        return MockVLM()
+    if backend == "qwen":
+        if not model_path:
+            raise ValueError("--model-path is required for --backend qwen")
+        return Qwen3VLTransformers(
+            model_name_or_path=model_path,
+            max_new_tokens=max_new_tokens,
+        )
+    raise ValueError(f"Unsupported backend: {backend}")
+
+
 def _output_record(
     sample: dict[str, Any],
     *,
@@ -51,44 +89,34 @@ def _output_record(
     error: str | None,
     fallback_sample_id: str | None = None,
     latency_sec: float | None = None,
-    gpu_memory_allocated_mb: float | None = None,
-    gpu_memory_reserved_mb: float | None = None,
-    gpu_peak_memory_allocated_mb: float | None = None,
 ) -> dict[str, Any]:
     return {
         "sample_id": sample.get("sample_id", fallback_sample_id),
+        "image_path": sample.get("image_path", ""),
+        "reference_image_path": sample.get("reference_image_path"),
         "prediction": prediction,
         "ground_truth_answer": sample.get("answer", ""),
         "task_type": sample.get("task_type", "unknown"),
         "object_category": sample.get("object_category", "unknown"),
-        "image_path": sample.get("image_path", ""),
-        "reference_image_path": sample.get("reference_image_path"),
-        "error": error,
         "latency_sec": latency_sec,
-        "gpu_memory_allocated_mb": gpu_memory_allocated_mb,
-        "gpu_memory_reserved_mb": gpu_memory_reserved_mb,
-        "gpu_peak_memory_allocated_mb": gpu_peak_memory_allocated_mb,
+        "error": error,
     }
 
 
-def run_batch_inference(
+def run_reference_inference(
     *,
     index_path: Path,
     output_path: Path,
     backend: str = "mock",
-    limit: int | None = None,
-    show_progress: bool = True,
     model_path: str | None = None,
+    prompt_type: str = "reference_strict",
+    reference_strategy: ReferenceStrategy = "first",
+    limit: int | None = None,
     max_new_tokens: int = 512,
-    prompt_type: str = "basic",
+    show_progress: bool = True,
     vlm: BaseVLM | None = None,
-    dataset_root: Path | None = None,
-    device_map: str = "auto",
-    torch_dtype: str = "auto",
-    min_pixels: int | None = None,
-    max_pixels: int | None = None,
-) -> BatchSummary:
-    """Process JSONL rows independently and write one output row per input."""
+) -> ReferenceInferenceSummary:
+    """Run reference selection and VLM inference for every JSONL sample."""
 
     index_path = index_path.expanduser().resolve()
     output_path = output_path.expanduser().resolve()
@@ -100,50 +128,43 @@ def run_batch_inference(
         raise ValueError("--limit must be zero or greater")
     if backend not in {"mock", "qwen"}:
         raise ValueError(f"Unsupported backend: {backend}")
+    if prompt_type not in PROMPT_TYPES:
+        choices = ", ".join(PROMPT_TYPES)
+        raise ValueError(f"Unsupported prompt_type '{prompt_type}'. Choose from: {choices}")
+
+    samples = _read_index(index_path)
+    if limit is not None:
+        samples_to_process = samples[:limit]
+    else:
+        samples_to_process = samples
 
     if vlm is None:
-        if backend == "mock":
-            vlm = MockVLM()
-        else:
-            if not model_path:
-                raise ValueError("model_path is required for the Qwen backend")
-            vlm = Qwen3VLTransformers(
-                model_name_or_path=model_path,
-                max_new_tokens=max_new_tokens,
-                device_map=device_map,
-                torch_dtype=torch_dtype,
-                min_pixels=min_pixels,
-                max_pixels=max_pixels,
-            )
+        vlm = _create_backend(
+            backend,
+            model_path=model_path,
+            max_new_tokens=max_new_tokens,
+        )
+
+    selector = ReferenceSelector(reference_strategy)
     agent = InspectorAgent(vlm, prompt_type=prompt_type)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    summary = BatchSummary()
+    summary = ReferenceInferenceSummary()
     progress = tqdm(
-        total=limit,
-        desc=f"{backend.capitalize()} inference",
+        samples_to_process,
+        desc=f"{backend.capitalize()} reference inference",
         unit="sample",
         disable=not show_progress,
     )
 
     try:
-        with (
-            index_path.open("r", encoding="utf-8") as source,
-            output_path.open("w", encoding="utf-8", newline="\n") as destination,
-        ):
-            for line_number, line in enumerate(source, start=1):
-                if not line.strip():
-                    continue
-                if limit is not None and summary.total >= limit:
-                    break
+        with output_path.open("w", encoding="utf-8", newline="\n") as destination:
+            for line_index, original_sample in enumerate(progress, start=1):
+                sample: dict[str, Any] = dict(original_sample)
+                reference_image_path = selector.select(sample, samples)
+                sample["reference_image_path"] = reference_image_path
 
-                sample: dict[str, Any] = {}
-                reset_gpu_peak_memory()
                 with Timer(synchronize_cuda=True) as timer:
                     try:
-                        parsed = json.loads(line)
-                        if not isinstance(parsed, dict):
-                            raise TypeError("Index row must be a JSON object")
-                        sample = with_resolved_image_path(parsed, dataset_root)
                         result = agent.inspect(sample)
                         prediction = _prediction_dict(result)
                         error = None
@@ -155,22 +176,18 @@ def run_batch_inference(
                     except Exception as exc:
                         prediction = None
                         error = f"{type(exc).__name__}: {exc}"
-                        fallback_sample_id = f"line_{line_number:08d}"
+                        fallback_sample_id = f"line_{line_index:08d}"
                         summary.failed += 1
 
-                gpu_memory = get_gpu_memory_mb()
                 record = _output_record(
                     sample,
                     prediction=prediction,
                     error=error,
                     fallback_sample_id=fallback_sample_id,
                     latency_sec=timer.elapsed_sec,
-                    **gpu_memory,
                 )
-
                 destination.write(json.dumps(record, ensure_ascii=False) + "\n")
                 summary.total += 1
-                progress.update(1)
     finally:
         progress.close()
 
@@ -179,7 +196,7 @@ def run_batch_inference(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run batch industrial inspection with the mock backend."
+        description="Run reference-based industrial inspection over a JSONL index."
     )
     parser.add_argument("--index", type=Path, required=True, help="Input JSONL index.")
     parser.add_argument("--output", type=Path, required=True, help="Output JSONL file.")
@@ -195,32 +212,28 @@ def parse_args() -> argparse.Namespace:
         help="Required local model directory when --backend qwen is selected.",
     )
     parser.add_argument(
-        "--dataset-root",
-        type=Path,
+        "--prompt-type",
+        choices=PROMPT_TYPES,
+        default="reference_strict",
+        help="Inspection prompt strategy.",
+    )
+    parser.add_argument(
+        "--reference-strategy",
+        choices=["first", "random", "similarity"],
+        default="first",
+        help="Reference image selection strategy.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
         default=None,
-        help="Optional MMAD root used with image_relative_path for portability.",
+        help="Optional maximum number of samples to process.",
     )
     parser.add_argument(
         "--max-new-tokens",
         type=int,
         default=512,
-        help="Maximum generated tokens for the Qwen backend (default: 512).",
-    )
-    parser.add_argument("--device-map", default="auto")
-    parser.add_argument("--torch-dtype", default="auto")
-    parser.add_argument("--min-pixels", type=int, default=None)
-    parser.add_argument("--max-pixels", type=int, default=None)
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Optional maximum number of non-empty rows to process.",
-    )
-    parser.add_argument(
-        "--prompt-type",
-        choices=["basic", "industrial", "strict_json"],
-        default="basic",
-        help="Inspection prompt strategy (default: basic).",
+        help="Maximum generated tokens for the Qwen backend.",
     )
     return parser.parse_args()
 
@@ -228,19 +241,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     try:
-        summary = run_batch_inference(
+        summary = run_reference_inference(
             index_path=args.index,
             output_path=args.output,
             backend=args.backend,
-            limit=args.limit,
             model_path=args.model_path,
-            max_new_tokens=args.max_new_tokens,
             prompt_type=args.prompt_type,
-            dataset_root=args.dataset_root,
-            device_map=args.device_map,
-            torch_dtype=args.torch_dtype,
-            min_pixels=args.min_pixels,
-            max_pixels=args.max_pixels,
+            reference_strategy=args.reference_strategy,
+            limit=args.limit,
+            max_new_tokens=args.max_new_tokens,
         )
     except (FileNotFoundError, ValueError, QwenDependencyError) as exc:
         raise SystemExit(f"error: {exc}") from exc

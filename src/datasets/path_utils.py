@@ -23,8 +23,18 @@ def with_resolved_image_path(
     sample: dict[str, Any],
     dataset_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Return a shallow sample copy with its runtime image path resolved."""
+    """Return a shallow sample copy with runtime-compatible image fields.
+
+    Older indexes only contain ``image_path``. Reference-based workflows may
+    later add ``reference_image_path``. This helper keeps the single-image
+    runtime path unchanged while normalizing the optional reference field to
+    ``None`` when it is absent or empty.
+    """
 
     resolved = dict(sample)
     resolved["image_path"] = resolve_sample_image_path(sample, dataset_root)
+    reference_image_path = sample.get("reference_image_path")
+    resolved["reference_image_path"] = (
+        str(reference_image_path) if reference_image_path else None
+    )
     return resolved

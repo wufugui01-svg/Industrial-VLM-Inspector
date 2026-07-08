@@ -18,7 +18,7 @@ DEFECT_TYPES = (
     "none",
 )
 SEVERITY_LEVELS = ("none", "low", "medium", "high", "unknown")
-PROMPT_TYPES = ("basic", "industrial", "strict_json")
+PROMPT_TYPES = ("basic", "industrial", "strict_json", "reference_strict")
 
 
 def _sample_context(sample: dict[str, Any]) -> str:
@@ -39,6 +39,20 @@ def _json_contract() -> str:
         '  "defect_location": "brief location description",\n'
         '  "severity": "unknown",\n'
         '  "reason": "brief visual evidence",\n'
+        '  "confidence": 0.0\n'
+        "}"
+    )
+
+
+def _reference_json_contract() -> str:
+    return (
+        "{\n"
+        '  "is_anomaly": true or false,\n'
+        '  "defect_type": "scratch/crack/contamination/missing_part/'
+        'deformation/color_abnormality/texture_abnormality/unknown/none",\n'
+        '  "defect_location": "brief location description",\n'
+        '  "severity": "none/low/medium/high/unknown",\n'
+        '  "reason": "brief visual evidence based on comparison",\n'
         '  "confidence": 0.0\n'
         "}"
     )
@@ -99,6 +113,33 @@ def strict_json_prompt(sample: dict[str, Any]) -> str:
         "Perform industrial defect inspection on the supplied image.\n"
         f"Task context: {_sample_context(sample)}\n\n"
         "Your entire response must be a single JSON object matching this schema:\n"
+        f"{_reference_json_contract()}\n\n"
+        "Every key is required. Use JSON booleans without quotes and a numeric "
+        "confidence without quotes. Do not add extra keys.\n"
+        f"{_output_rules()}"
+    )
+
+
+def reference_strict_prompt(sample: dict[str, Any]) -> str:
+    """Ask for strict JSON inspection by comparing reference and test images."""
+
+    if not sample.get("reference_image_path"):
+        return strict_json_prompt(sample)
+
+    return (
+        "Perform reference-based industrial defect inspection.\n"
+        "Image 1 is the normal reference image. Image 2 is the test image to "
+        "inspect.\n"
+        "Compare the two images carefully and decide whether the test image has "
+        "local visual differences from the normal reference image.\n"
+        "Focus on scratches, cracks, contamination, missing parts, deformation, "
+        "color abnormality, and texture abnormality. Distinguish true defects "
+        "from lighting, reflections, shadows, viewpoint changes, and background "
+        "artifacts.\n"
+        "The reason field must briefly describe visual evidence based on the "
+        "comparison between the normal reference image and the test image.\n"
+        f"Task context: {_sample_context(sample)}\n\n"
+        "Your entire response must be a single JSON object matching this schema:\n"
         f"{_json_contract()}\n\n"
         "Every key is required. Use JSON booleans without quotes and a numeric "
         "confidence without quotes. Do not add extra keys.\n"
@@ -110,6 +151,7 @@ PROMPT_BUILDERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "basic": basic_anomaly_prompt,
     "industrial": industrial_inspection_prompt,
     "strict_json": strict_json_prompt,
+    "reference_strict": reference_strict_prompt,
 }
 
 

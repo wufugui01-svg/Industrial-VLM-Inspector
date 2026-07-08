@@ -68,6 +68,7 @@ def test_batch_inference_writes_complete_output() -> None:
     assert rows[0]["task_type"] == "Anomaly Detection"
     assert rows[0]["object_category"] == "bottle"
     assert rows[0]["image_path"] == "/tmp/one.png"
+    assert rows[0]["reference_image_path"] is None
     assert rows[0]["prediction"]["confidence"] == 0.5
     assert rows[0]["error"] is None
     assert isinstance(rows[0]["latency_sec"], float)
@@ -110,3 +111,32 @@ def test_bad_row_is_recorded_and_batch_continues() -> None:
     assert rows[1]["sample_id"] == "valid-after-error"
     assert rows[1]["prediction"] is not None
     assert rows[1]["error"] is None
+
+
+def test_batch_inference_preserves_reference_image_path() -> None:
+    sample = {
+        "sample_id": "with-reference",
+        "image_path": "/tmp/test.png",
+        "reference_image_path": "/tmp/reference.png",
+        "answer": "A",
+        "task_type": "Anomaly Detection",
+        "object_category": "widget",
+    }
+
+    with tempfile.TemporaryDirectory() as temporary_directory:
+        root = Path(temporary_directory)
+        index_path = root / "index.jsonl"
+        output_path = root / "predictions.jsonl"
+        index_path.write_text(json.dumps(sample) + "\n", encoding="utf-8")
+
+        summary = run_batch_inference(
+            index_path=index_path,
+            output_path=output_path,
+            show_progress=False,
+        )
+        rows = _read_jsonl(output_path)
+
+    assert summary.total == 1
+    assert summary.succeeded == 1
+    assert rows[0]["image_path"] == "/tmp/test.png"
+    assert rows[0]["reference_image_path"] == "/tmp/reference.png"

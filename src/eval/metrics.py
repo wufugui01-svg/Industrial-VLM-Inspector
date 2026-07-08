@@ -11,27 +11,26 @@ from src.agent.schema import InspectionResult
 
 NORMAL_LABELS = {
     "0",
+    "a",
     "false",
     "good",
     "no",
     "no defect",
     "non-defective",
     "normal",
+    "正常",
 }
 ANOMALY_LABELS = {
     "1",
     "abnormal",
     "anomalous",
     "anomaly",
+    "b",
     "defect",
     "defective",
     "true",
     "yes",
-}
-BINARY_TASK_TYPES = {
-    "anomaly classification",
-    "anomaly detection",
-    "binary classification",
+    "异常",
 }
 
 
@@ -83,6 +82,18 @@ def _validated_prediction(value: Any) -> InspectionResult | None:
         return None
 
 
+def _select_prediction(row: dict[str, Any]) -> Any:
+    """Select final/prediction/global output in preferred evaluation order."""
+
+    if "final_prediction" in row and row.get("final_prediction") is not None:
+        return row.get("final_prediction")
+    if "prediction" in row and row.get("prediction") is not None:
+        return row.get("prediction")
+    if "global_prediction" in row and row.get("global_prediction") is not None:
+        return row.get("global_prediction")
+    return None
+
+
 def calculate_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Calculate basic integrity, distribution, and optional binary metrics."""
 
@@ -96,10 +107,14 @@ def calculate_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     parse_failed_count = 0
     binary_evaluated_count = 0
     binary_correct_count = 0
+    true_positive_count = 0
+    false_positive_count = 0
+    false_negative_count = 0
     skipped_binary_eval_count = 0
     task_types: Counter[str] = Counter()
     object_categories: Counter[str] = Counter()
     latencies: list[float] = []
+    confidences: list[float] = []
     gpu_memory_allocated: list[float] = []
 
     for row in rows:
@@ -124,9 +139,10 @@ def calculate_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         if allocated_memory is not None:
             gpu_memory_allocated.append(allocated_memory)
 
-        prediction = _validated_prediction(row.get("prediction"))
+        prediction = _validated_prediction(_select_prediction(row))
         if prediction is not None:
             json_valid_count += 1
+            confidences.append(prediction.confidence)
             if prediction.parse_status == "success":
                 parse_success_count += 1
             elif prediction.parse_status == "repaired":
@@ -145,11 +161,9 @@ def calculate_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
             error_count += 1
 
         ground_truth = map_binary_ground_truth(row.get("ground_truth_answer"))
-        is_binary_task = task_type.strip().casefold() in BINARY_TASK_TYPES
         if (
             not inference_succeeded
             or ground_truth is None
-            or not is_binary_task
         ):
             skipped_binary_eval_count += 1
             continue
@@ -157,6 +171,12 @@ def calculate_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         binary_evaluated_count += 1
         if prediction.is_anomaly == ground_truth:
             binary_correct_count += 1
+        if prediction.is_anomaly and ground_truth:
+            true_positive_count += 1
+        elif prediction.is_anomaly and not ground_truth:
+            false_positive_count += 1
+        elif not prediction.is_anomaly and ground_truth:
+            false_negative_count += 1
 
     json_valid_rate = (
         json_valid_count / total_samples if total_samples else 0.0
@@ -173,8 +193,28 @@ def calculate_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         if binary_evaluated_count
         else None
     )
+    precision_denominator = true_positive_count + false_positive_count
+    recall_denominator = true_positive_count + false_negative_count
+    precision = (
+        true_positive_count / precision_denominator
+        if binary_evaluated_count and precision_denominator
+        else None
+    )
+    recall = (
+        true_positive_count / recall_denominator
+        if binary_evaluated_count and recall_denominator
+        else None
+    )
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if precision is not None and recall is not None and (precision + recall)
+        else None
+    )
     avg_latency_sec = (
         sum(latencies) / len(latencies) if latencies else None
+    )
+    avg_confidence = (
+        sum(confidences) / len(confidences) if confidences else None
     )
 
     return {
@@ -189,9 +229,19 @@ def calculate_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "parse_failed_count": parse_failed_count,
         "parse_success_rate": parse_success_rate,
         "repair_rate": repair_rate,
+        "avg_confidence": avg_confidence,
         "task_type_distribution": dict(sorted(task_types.items())),
         "object_category_distribution": dict(sorted(object_categories.items())),
         "binary_accuracy": binary_accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "false_positive_count": (
+            false_positive_count if binary_evaluated_count else None
+        ),
+        "false_negative_count": (
+            false_negative_count if binary_evaluated_count else None
+        ),
         "binary_evaluated_count": binary_evaluated_count,
         "binary_correct_count": binary_correct_count,
         "skipped_binary_eval_count": skipped_binary_eval_count,
